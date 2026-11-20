@@ -1,7 +1,8 @@
 package com.personal.gpstracker
 
 import android.Manifest
-import android.app.Activity
+import androidx.activity.ComponentActivity
+import androidx.activity.result.contract.ActivityResultContracts
 import android.content.Intent
 import android.content.IntentFilter
 import android.os.BatteryManager
@@ -21,7 +22,7 @@ import android.widget.ArrayAdapter
 import android.widget.Switch
 import android.widget.Toast
 
-class MainActivity : Activity() {
+class MainActivity : ComponentActivity() {
 
 private lateinit var statusText: TextView
 private lateinit var toggleButton: Button
@@ -255,6 +256,21 @@ private fun createCardBackground(color: Int): android.graphics.drawable.Gradient
         }
     }
 
+private val locationPermissionRequest =
+    registerForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { permissions ->
+
+        val fineLocationGranted =
+            permissions[Manifest.permission.ACCESS_FINE_LOCATION] == true
+
+        if (fineLocationGranted) {
+            toggleGpsTracking()
+        } else {
+            statusText.text = "Precise location permission required"
+        }
+    }
+
 private fun toggleGpsTracking() {
     val prefs = getSharedPreferences(
         GpsService.PREFS_NAME,
@@ -267,12 +283,18 @@ private fun toggleGpsTracking() {
     )
 
     if (!isTracking) {
-        if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)
-            != PackageManager.PERMISSION_GRANTED
-        ) {
-            statusText.text = "Please grant precise location permission"
-            return
-        }
+        
+if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)
+    != PackageManager.PERMISSION_GRANTED
+) {
+    locationPermissionRequest.launch(
+        arrayOf(
+            Manifest.permission.ACCESS_FINE_LOCATION,
+            Manifest.permission.ACCESS_COARSE_LOCATION
+        )
+    )
+    return
+}
 
         val intent = Intent(this, GpsService::class.java)
 
