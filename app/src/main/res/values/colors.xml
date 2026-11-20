@@ -1,0 +1,9 @@
+<resources>
+    <color name="screen_bg">#F7F5FC</color>
+    <color name="card_bg">#FFFFFF</color>
+    <color name="primary">#7357D9</color>
+    <color name="text_primary">#242033</color>
+    <color name="text_secondary">#777387</color>
+    <color name="success">#269B65</color>
+    <color name="danger">#D94C4C</color>
+</resources>
