@@ -228,9 +228,47 @@ layout.setOnApplyWindowInsetsListener { _, insets ->
 
         setContentView(layout)
 
-        updateInterface()
+val prefs = getSharedPreferences(
+    GpsService.PREFS_NAME,
+    MODE_PRIVATE
+)
 
-        requestNotificationPermission()
+val hasExistingSetup =
+    prefs.contains(GpsService.KEY_TRACKING) ||
+    prefs.contains(GpsService.KEY_DEVICE_NAME)
+
+val setupCompleted = prefs.getBoolean(
+    GpsService.KEY_SETUP_COMPLETED,
+    hasExistingSetup
+)
+
+if (!setupCompleted) {
+    showWelcomeScreen()
+    return
+}
+
+updateInterface()
+
+val isTracking = prefs.getBoolean(
+    GpsService.KEY_TRACKING,
+    true
+)
+
+if (isTracking) {
+    if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)
+        != PackageManager.PERMISSION_GRANTED
+    ) {
+        locationPermissionRequest.launch(
+            arrayOf(
+                Manifest.permission.ACCESS_FINE_LOCATION,
+                Manifest.permission.ACCESS_COARSE_LOCATION
+            )
+        )
+    } else {
+        startGpsTracking()
+    }
+}
+
     }
 
 private fun dp(value: Int): Int {
@@ -242,6 +280,83 @@ private fun createCardBackground(color: Int): android.graphics.drawable.Gradient
         setColor(color)
         cornerRadius = 20f * resources.displayMetrics.density
     }
+}
+
+private fun showWelcomeScreen() {
+
+    val title = TextView(this).apply {
+        text = "Welcome to GPS Tracker"
+        textSize = 28f
+        setTextColor(getColor(R.color.text_primary))
+    }
+
+    val subtitle = TextView(this).apply {
+        text = "Let's set up your device before tracking begins."
+        textSize = 14f
+        setTextColor(getColor(R.color.text_secondary))
+    }
+
+    val deviceNameInput = EditText(this).apply {
+        hint = "Example: My Android Phone"
+        setSingleLine(true)
+        textSize = 16f
+    }
+
+    val continueButton = Button(this).apply {
+        text = "Continue"
+        isAllCaps = false
+        textSize = 18f
+        setTextColor(android.graphics.Color.WHITE)
+        background = createCardBackground(getColor(R.color.primary))
+        minHeight = dp(55)
+    }
+
+    continueButton.setOnClickListener {
+
+        val deviceName = deviceNameInput.text.toString().trim()
+
+        if (deviceName.isEmpty()) {
+            deviceNameInput.error = "Please enter a device name"
+            return@setOnClickListener
+        }
+
+        getSharedPreferences(
+            GpsService.PREFS_NAME,
+            MODE_PRIVATE
+        ).edit()
+            .putString(GpsService.KEY_DEVICE_NAME, deviceName)
+            .putBoolean(GpsService.KEY_SETUP_COMPLETED, true)
+            .apply()
+
+        recreate()
+    }
+
+    val content = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        setPadding(dp(24), dp(24), dp(24), dp(24))
+
+        addView(title)
+        addView(subtitle)
+
+        addView(deviceNameInput, LinearLayout.LayoutParams(
+            -1, -2
+        ).apply {
+            topMargin = dp(32)
+        })
+
+        addView(continueButton, LinearLayout.LayoutParams(
+            -1, -2
+        ).apply {
+            topMargin = dp(24)
+        })
+    }
+
+    val layout = ScrollView(this).apply {
+        setBackgroundColor(getColor(R.color.screen_bg))
+        addView(content)
+    }
+
+    setContentView(layout)
 }
 
     private fun requestNotificationPermission() {
@@ -264,12 +379,36 @@ private val locationPermissionRequest =
         val fineLocationGranted =
             permissions[Manifest.permission.ACCESS_FINE_LOCATION] == true
 
-        if (fineLocationGranted) {
-            toggleGpsTracking()
-        } else {
-            statusText.text = "Precise location permission required"
-        }
+if (fineLocationGranted) {
+    Toast.makeText(this, "Location permission granted", Toast.LENGTH_LONG).show()
+    startGpsTracking()
+} else {
+    Toast.makeText(this, "Location permission denied", Toast.LENGTH_LONG).show()
+    statusText.text = "Precise location permission required"
+}
+requestNotificationPermission()
     }
+
+private fun startGpsTracking() {
+    val prefs = getSharedPreferences(
+        GpsService.PREFS_NAME,
+        MODE_PRIVATE
+    )
+
+    val intent = Intent(this, GpsService::class.java)
+
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        startForegroundService(intent)
+    } else {
+        startService(intent)
+    }
+
+    prefs.edit()
+        .putBoolean(GpsService.KEY_TRACKING, true)
+        .apply()
+
+    updateInterface()
+}
 
 private fun toggleGpsTracking() {
     val prefs = getSharedPreferences(
@@ -279,7 +418,7 @@ private fun toggleGpsTracking() {
 
     val isTracking = prefs.getBoolean(
         GpsService.KEY_TRACKING,
-        false
+        true
     )
 
     if (!isTracking) {
@@ -296,24 +435,23 @@ if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)
     return
 }
 
-        val intent = Intent(this, GpsService::class.java)
+        startGpsTracking()
+
+    } else {
+
+        prefs.edit()
+            .putBoolean(GpsService.KEY_TRACKING, false)
+            .apply()
+
+        val intent = Intent(this, GpsService::class.java).apply {
+            action = GpsService.ACTION_STOP_TRACKING
+        }
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             startForegroundService(intent)
         } else {
             startService(intent)
         }
-
-        prefs.edit()
-            .putBoolean(GpsService.KEY_TRACKING, true)
-            .apply()
-
-    } else {
-        stopService(Intent(this, GpsService::class.java))
-
-        prefs.edit()
-            .putBoolean(GpsService.KEY_TRACKING, false)
-            .apply()
     }
 
     updateInterface()
@@ -327,7 +465,7 @@ private fun updateInterface() {
 
     val isTracking = prefs.getBoolean(
         GpsService.KEY_TRACKING,
-        false
+        true
     )
 
     val deviceName = prefs.getString(

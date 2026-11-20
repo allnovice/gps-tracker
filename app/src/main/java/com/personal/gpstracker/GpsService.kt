@@ -21,6 +21,7 @@ import java.net.URL
 import java.util.concurrent.Executors
 import android.app.PendingIntent
 import android.content.BroadcastReceiver
+import android.os.Handler
 
 class GpsService : Service() {
 
@@ -34,6 +35,8 @@ class GpsService : Service() {
 
         const val PREFS_NAME = "gps_tracker"
         const val KEY_TRACKING = "is_tracking"
+        const val ACTION_START_TRACKING = "START_TRACKING"
+        const val ACTION_STOP_TRACKING = "STOP_TRACKING"
 
         const val KEY_LATITUDE = "latitude"
         const val KEY_LONGITUDE = "longitude"
@@ -44,8 +47,17 @@ class GpsService : Service() {
         const val KEY_UPLOAD_STATUS = "upload_status"
 
         const val KEY_DEVICE_NAME = "device_name"
+        const val KEY_SETUP_COMPLETED = "setup_completed"
         const val KEY_INTERVAL = "update_interval"
         const val KEY_HIGH_ACCURACY = "high_accuracy"
+
+const val KEY_REALTIME = "realtime_tracking"
+const val ACTION_START_REALTIME = "START_REALTIME"
+const val ACTION_STOP_REALTIME = "STOP_REALTIME"
+const val KEY_REALTIME_UNTIL = "realtime_until"
+
+const val REALTIME_INTERVAL = 5_000L
+const val REALTIME_DURATION = 60 * 60 * 1000L
 
         const val DEFAULT_DEVICE_NAME = "Phone-t5rstp"
         const val DEFAULT_INTERVAL = 10
@@ -56,6 +68,9 @@ class GpsService : Service() {
     private lateinit var notificationManager: NotificationManager
 
     private val executor = Executors.newSingleThreadExecutor()
+
+private val realtimeHandler = Handler(Looper.getMainLooper())
+private var realtimeExpiryRunnable: Runnable? = null
 
 private var isStationary = false
 private var stationaryReadings = 0
@@ -74,14 +89,20 @@ private fun createLocationRequest(
 ): LocationRequest {
     val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
 
-val interval = intervalOverride ?: (
-    prefs.getInt(KEY_INTERVAL, DEFAULT_INTERVAL) * 1000L
-)
+val isRealtime = prefs.getBoolean(KEY_REALTIME, false)
 
-    val highAccuracy = prefs.getBoolean(
-        KEY_HIGH_ACCURACY,
-        DEFAULT_HIGH_ACCURACY
+val interval = if (isRealtime) {
+    REALTIME_INTERVAL
+} else {
+    intervalOverride ?: (
+        prefs.getInt(KEY_INTERVAL, DEFAULT_INTERVAL) * 1000L
     )
+}
+
+val highAccuracy = isRealtime || prefs.getBoolean(
+    KEY_HIGH_ACCURACY,
+    DEFAULT_HIGH_ACCURACY
+)
 
     val priority = if (highAccuracy) {
         Priority.PRIORITY_HIGH_ACCURACY
@@ -93,8 +114,13 @@ val interval = intervalOverride ?: (
         priority,
         interval
     )
-        .setMinUpdateIntervalMillis(interval / 2)
-        .build()
+
+.setMinUpdateIntervalMillis(
+    if (isRealtime) REALTIME_INTERVAL else interval / 2
+)
+.setMaxUpdateDelayMillis(0L)
+.build()
+
 }
 
 private fun changeLocationInterval(interval: Long) {
@@ -132,36 +158,200 @@ private fun changeLocationInterval(interval: Long) {
         createNotificationChannel()
     }
 
-    override fun onStartCommand(
-        intent: Intent?,
-        flags: Int,
-        startId: Int
-    ): Int {
+override fun onStartCommand(
+    intent: Intent?,
+    flags: Int,
+    startId: Int
+): Int {
 
-getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
-    .edit()
-    .putBoolean(KEY_TRACKING, true)
-    .apply()
+    val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
 
-        val notification = createNotification(
-            "Waiting for GPS...",
-            "Starting tracker"
+    // Normal app startup
+    if (intent != null && intent.action == null) {
+        prefs.edit()
+            .putBoolean(KEY_TRACKING, true)
+            .apply()
+    }
+
+    val notification = createNotification(
+        "Waiting for GPS...",
+        "Starting tracker"
+    )
+
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        startForeground(
+            NOTIFICATION_ID,
+            notification,
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
         )
+    } else {
+        startForeground(NOTIFICATION_ID, notification)
+    }
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(
-                NOTIFICATION_ID,
-                notification,
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
+    when (intent?.action) {
+
+        ACTION_STOP_TRACKING -> {
+
+            prefs.edit()
+                .putBoolean(KEY_TRACKING, false)
+                .putBoolean(KEY_REALTIME, false)
+                .putLong(KEY_REALTIME_UNTIL, 0L)
+                .apply()
+
+            realtimeExpiryRunnable?.let {
+                realtimeHandler.removeCallbacks(it)
+            }
+
+            realtimeExpiryRunnable = null
+
+            fusedLocationClient.removeLocationUpdates(locationCallback)
+
+            updateNotification(
+                "GPS tracking stopped",
+                "GPS Tracking Stopped"
             )
-        } else {
-            startForeground(NOTIFICATION_ID, notification)
         }
 
-        startGpsUpdates()
+        ACTION_START_TRACKING -> {
 
-        return START_STICKY
+            prefs.edit()
+                .putBoolean(KEY_TRACKING, true)
+                .apply()
+
+            startGpsUpdates()
+
+            updateNotification(
+                "Waiting for GPS...",
+                "GPS Tracking Active"
+            )
+        }
+
+        ACTION_START_REALTIME -> {
+
+            prefs.edit()
+                .putBoolean(KEY_TRACKING, true)
+                .putBoolean(KEY_REALTIME, true)
+                .putLong(
+                    KEY_REALTIME_UNTIL,
+                    System.currentTimeMillis() + REALTIME_DURATION
+                )
+                .apply()
+
+            scheduleRealtimeExpiry()
+
+            startGpsUpdates()
+
+            updateNotification(
+                "Real-time tracking active",
+                "Expires in 1 hour"
+            )
+        }
+
+        ACTION_STOP_REALTIME -> {
+
+            prefs.edit()
+                .putBoolean(KEY_REALTIME, false)
+                .putLong(KEY_REALTIME_UNTIL, 0L)
+                .apply()
+
+            realtimeExpiryRunnable?.let {
+                realtimeHandler.removeCallbacks(it)
+            }
+
+            realtimeExpiryRunnable = null
+
+            if (prefs.getBoolean(KEY_TRACKING, true)) {
+                startGpsUpdates()
+
+                updateNotification(
+                    "Normal tracking active",
+                    "Real-time tracking stopped"
+                )
+            } else {
+                updateNotification(
+                    "GPS tracking stopped",
+                    "GPS Tracking Stopped"
+                )
+            }
+        }
+
+        else -> {
+
+            if (prefs.getBoolean(KEY_TRACKING, true)) {
+
+                if (isRealtimeActive()) {
+                    scheduleRealtimeExpiry()
+                }
+
+                startGpsUpdates()
+
+                updateNotification(
+                    "Waiting for GPS...",
+                    "GPS Tracking Active"
+                )
+
+            } else {
+
+                fusedLocationClient.removeLocationUpdates(locationCallback)
+
+                updateNotification(
+                    "GPS tracking stopped",
+                    "GPS Tracking Stopped"
+                )
+            }
+        }
     }
+
+    return START_STICKY
+}
+
+private fun isRealtimeActive(): Boolean {
+    val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+
+    val isRealtime = prefs.getBoolean(KEY_REALTIME, false)
+    val expiresAt = prefs.getLong(KEY_REALTIME_UNTIL, 0L)
+
+    if (isRealtime && System.currentTimeMillis() >= expiresAt) {
+        prefs.edit()
+            .putBoolean(KEY_REALTIME, false)
+            .putLong(KEY_REALTIME_UNTIL, 0L)
+            .apply()
+
+        Log.d(TAG, "Real-time tracking expired")
+        return false
+    }
+
+    return isRealtime
+}
+
+private fun scheduleRealtimeExpiry() {
+    realtimeExpiryRunnable?.let {
+        realtimeHandler.removeCallbacks(it)
+    }
+
+    val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+    val expiresAt = prefs.getLong(KEY_REALTIME_UNTIL, 0L)
+    val remaining = (expiresAt - System.currentTimeMillis()).coerceAtLeast(0L)
+
+    val runnable = Runnable {
+        if (isRealtimeActive()) {
+            scheduleRealtimeExpiry()
+        } else {
+            updateNotification(
+                "Normal tracking active",
+                "Real-time session expired"
+            )
+
+changeLocationInterval(
+    if (isStationary) stationaryInterval else getSelectedInterval()
+)
+
+        }
+    }
+
+    realtimeExpiryRunnable = runnable
+    realtimeHandler.postDelayed(runnable, remaining)
+}
 
     private fun startGpsUpdates() {
         if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)
@@ -175,6 +365,9 @@ getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
         }
 
         try {
+
+            fusedLocationClient.removeLocationUpdates(locationCallback)
+
             fusedLocationClient.requestLocationUpdates(
                 createLocationRequest(),
                 locationCallback,
@@ -240,6 +433,14 @@ private fun handleLocation(location: Location) {
 
         return
     }
+
+val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+val isRealtime = prefs.getBoolean(KEY_REALTIME, false)
+
+if (isRealtime) {
+    uploadLocation(lat, lon)
+    return
+}
 
     val reference = referenceLocation
 
@@ -424,28 +625,75 @@ private fun createNotification(
     status: String
 ): Notification {
 
-    val stopIntent = Intent(this, StopGpsReceiver::class.java)
+    val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
 
-    val stopPendingIntent = PendingIntent.getBroadcast(
+    val isRealtime = isRealtimeActive()
+    val isTracking = prefs.getBoolean(KEY_TRACKING, true)
+    val isConnected = prefs.getBoolean(KEY_SERVER_CONNECTED, false)
+
+    val connectionStatus = if (isConnected) {
+        "Connected"
+    } else {
+        "Disconnected"
+    }
+
+    val trackingStatus = if (isTracking) {
+        "Active"
+    } else {
+        "Stopped"
+    }
+
+    val realtimeIntent = Intent(this, GpsService::class.java).apply {
+        action = if (isRealtime) ACTION_STOP_REALTIME else ACTION_START_REALTIME
+    }
+
+    val realtimePendingIntent = PendingIntent.getForegroundService(
+        this,
+        200,
+        realtimeIntent,
+        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+    )
+
+    val trackingIntent = Intent(this, GpsService::class.java).apply {
+        action = if (isTracking) ACTION_STOP_TRACKING else ACTION_START_TRACKING
+    }
+
+    val trackingPendingIntent = PendingIntent.getForegroundService(
         this,
         100,
-        stopIntent,
+        trackingIntent,
+        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+    )
+
+    val openAppIntent = Intent(this, MainActivity::class.java).apply {
+        flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                Intent.FLAG_ACTIVITY_SINGLE_TOP
+    }
+
+    val openAppPendingIntent = PendingIntent.getActivity(
+        this,
+        300,
+        openAppIntent,
         PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
     )
 
     return Notification.Builder(this, CHANNEL_ID)
         .setContentTitle("GPS Tracker")
-        .setContentText(status)
-        .setStyle(
-            Notification.BigTextStyle()
-                .bigText("$status\n$coordinates")
-        )
+        .setContentText("$connectionStatus | $trackingStatus")
+        .setContentIntent(openAppPendingIntent)
         .setSmallIcon(android.R.drawable.ic_menu_mylocation)
         .setOngoing(true)
         .addAction(
-            android.R.drawable.ic_media_pause,
-            "STOP",
-            stopPendingIntent
+            if (isRealtime) android.R.drawable.ic_media_pause
+            else android.R.drawable.ic_media_play,
+            if (isRealtime) "STOP REAL-TIME" else "REAL-TIME (1 HR)",
+            realtimePendingIntent
+        )
+        .addAction(
+            if (isTracking) android.R.drawable.ic_media_pause
+            else android.R.drawable.ic_media_play,
+            if (isTracking) "STOP" else "START",
+            trackingPendingIntent
         )
         .build()
 }
@@ -461,11 +709,6 @@ private fun createNotification(
     }
 
     override fun onDestroy() {
-
-getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
-    .edit()
-    .putBoolean(KEY_TRACKING, false)
-    .apply()
 
         super.onDestroy()
 
