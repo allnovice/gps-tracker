@@ -22,6 +22,7 @@ import java.util.concurrent.Executors
 import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.os.Handler
+import android.widget.Toast
 
 class GpsService : Service() {
 
@@ -210,6 +211,11 @@ override fun onStartCommand(
                 "GPS tracking stopped",
                 "GPS Tracking Stopped"
             )
+Toast.makeText(
+    this,
+    "GPS Tracking Stopped",
+    Toast.LENGTH_SHORT
+).show()
         }
 
         ACTION_START_TRACKING -> {
@@ -224,6 +230,11 @@ override fun onStartCommand(
                 "Waiting for GPS...",
                 "GPS Tracking Active"
             )
+Toast.makeText(
+    this,
+    "GPS Tracking Started",
+    Toast.LENGTH_SHORT
+).show()
         }
 
         ACTION_START_REALTIME -> {
@@ -245,6 +256,11 @@ override fun onStartCommand(
                 "Real-time tracking active",
                 "Expires in 1 hour"
             )
+Toast.makeText(
+    this,
+    "Real-Time Tracking Enabled (1 Hour)",
+    Toast.LENGTH_SHORT
+).show()
         }
 
         ACTION_STOP_REALTIME -> {
@@ -267,6 +283,11 @@ override fun onStartCommand(
                     "Normal tracking active",
                     "Real-time tracking stopped"
                 )
+Toast.makeText(
+    this,
+    "Real-Time Tracking Disabled",
+    Toast.LENGTH_SHORT
+).show()
             } else {
                 updateNotification(
                     "GPS tracking stopped",
@@ -698,15 +719,17 @@ private fun createNotification(
         .build()
 }
 
-    private fun updateNotification(
-        coordinates: String,
-        status: String
-    ) {
-        notificationManager.notify(
-            NOTIFICATION_ID,
-            createNotification(coordinates, status)
-        )
-    }
+private fun updateNotification(
+    coordinates: String,
+    status: String
+) {
+    notificationManager.notify(
+        NOTIFICATION_ID,
+        createNotification(coordinates, status)
+    )
+
+    GpsWidgetProvider.updateAllWidgets(this)
+}
 
     override fun onDestroy() {
 
